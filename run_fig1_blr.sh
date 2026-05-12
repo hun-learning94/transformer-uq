@@ -1,0 +1,129 @@
+#!/bin/bash
+
+# Stop immediately if any command fails
+set -e
+
+# --- Configuration Grid ---
+Ls=(64 32 16 8 4 2)
+Cs=(256 128 64 32 16 8)
+N_MAXs=(512)
+MODES=("learnable" "theory")
+NORMS=(0)
+KERNELS=("linear")
+NORMDECAYS=(0)
+
+# --- Fixed Parameters ---
+TASK="blr"
+D=5
+N_MODE="mixture"
+N_MIN=128
+SEED=1
+BATCH_SIZE=128
+
+# Loop over L, C, and N_MAX
+for L in "${Ls[@]}"; do
+    for C in "${Cs[@]}"; do
+        for N_MAX in "${N_MAXs[@]}"; do
+
+            # Loop: KERNEL
+            for KERNEL in "${KERNELS[@]}"; do
+                for MODE in "${MODES[@]}"; do
+                    for NORM in "${NORMS[@]}"; do
+                        for NORMDECAY in "${NORMDECAYS[@]}"; do
+
+                            # --- CONSTRAINT CHECKS ---
+                            if [ "$NORMDECAY" -eq 1 ]; then
+                                if [ "$MODE" != "learnable" ]; then continue; fi
+                                if [ "$NORM" -ne 1 ]; then continue; fi
+                            fi
+                            if [ "$MODE" == "theory" ] && [ "$NORM" -eq 1 ]; then continue; fi
+                            if [ "$KERNEL" == "softmax" ]; then
+                                if [ "$MODE" == "theory" ]; then continue; fi
+                                if [ "$NORM" -eq 0 ]; then continue; fi
+                            fi
+
+                            # --- Hyperparameter Logic ---
+                            if [ "$MODE" == "theory" ]; then
+                                LR=2e-4
+                                STEPS=10000; 
+                            fi
+                            if [ "$MODE" == "learnable" ]; then
+                                LR=2e-4
+                                STEPS=20000; 
+                            fi
+
+                            # --- Directory Names ---
+                            if [ "$NORM" -eq 1 ]; then NORM_TAG="_norm"; else NORM_TAG=""; fi
+                            if [ "$NORMDECAY" -eq 1 ]; then ND_TAG="_nd"; else ND_TAG=""; fi
+                            if [ "$KERNEL" == "softmax" ]; then KERNEL_TAG="_softmax"; else KERNEL_TAG=""; fi
+
+                            DIR_NAME="runs/${TASK}_d${D}_C${C}_L${L}_${N_MODE}_n${N_MIN}-${N_MAX}_${MODE}${NORM_TAG}${ND_TAG}${KERNEL_TAG}_seed${SEED}"
+                            
+                            # Note: I removed the "Skip if Finished" block here so we can attempt to extend
+                            # existing runs if you increase STEPS later.
+
+                            echo "------------------------------------------------------------------"
+                            echo "RUNNING: L=$L N=$N_MAX K=$KERNEL Mode=$MODE LR=$LR Steps=$STEPS"
+                            echo "------------------------------------------------------------------"
+
+                            # --- SMART RESUME LOGIC ---
+                            RESUME_ARG=""
+                            
+                            # Find the latest step checkpoint (sort by version number)
+                            LATEST_STEP_CKPT=$(ls -v "${DIR_NAME}"/ckpt_step_*.pt 2>/dev/null | tail -n 1)
+                            
+                            if [ -n "$LATEST_STEP_CKPT" ]; then
+                                # 1. Extract the step number using regex
+                                # Matches numbers after 'ckpt_step_' and before '.pt'
+                                if [[ $LATEST_STEP_CKPT =~ ckpt_step_([0-9]+).pt ]]; then
+                                    FOUND_STEP="${BASH_REMATCH[1]}"
+                                else
+                                    FOUND_STEP=0
+                                fi
+                                
+                                echo "🔍 Found checkpoint at step: $FOUND_STEP (Target: $STEPS)"
+
+                                # 2. Logic Check
+                                if [ "$FOUND_STEP" -lt "$STEPS" ]; then
+                                    # Case A: Crash recovery (Resume seamlessly)
+                                    echo "🔄 Resuming run (Step $FOUND_STEP < $STEPS)... keeping schedule."
+                                    RESUME_ARG="--resume $LATEST_STEP_CKPT"
+                                else
+                                    # Case B: Extending run (Restart schedule)
+                                    echo "🚀 Checkpoint reached target step. Restarting Schedule/Optimizer for new steps."
+                                    RESUME_ARG="--resume $LATEST_STEP_CKPT --reset_scheduler"
+                                fi
+                            else
+                                # Case C: New Run
+                                echo "✨ No checkpoints found. Starting fresh."
+                            fi
+
+                            # --- Run Training ---
+                            python train.py \
+                                --task $TASK \
+                                --kernel $KERNEL \
+                                --mode $MODE \
+                                --normalize $NORM \
+                                --normdecay $NORMDECAY \
+                                --d $D \
+                                --n_mode $N_MODE \
+                                --n_min $N_MIN \
+                                --n_max $N_MAX \
+                                --L $L \
+                                --C $C \
+                                --seed $SEED \
+                                --batch $BATCH_SIZE \
+                                --save_every 500 \
+                                --save_best 1 \
+                                --lr $LR \
+                                --steps $STEPS \
+                                $RESUME_ARG
+
+                            echo ""
+                        done
+                    done
+                done
+            done
+        done
+    done
+done
