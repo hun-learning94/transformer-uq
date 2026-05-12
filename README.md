@@ -41,7 +41,7 @@ python train.py --resume <path_to_checkpoint>
 ## Reproducing paper results
 To reproduce Figure 1,
 ```bash
-python train_walker.py
+python walker_train.py
 python walker_comparison.py
 ```
 To reproduce Figure 2,
